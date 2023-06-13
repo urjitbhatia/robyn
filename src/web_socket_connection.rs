@@ -4,7 +4,7 @@ use actix::prelude::*;
 use actix::{Actor, AsyncContext, StreamHandler};
 use actix_web::{web, Error, HttpRequest, HttpResponse};
 use actix_web_actors::ws;
-use log::debug;
+use log::{debug, error};
 use pyo3::prelude::*;
 use pyo3_asyncio::TaskLocals;
 use uuid::Uuid;
@@ -30,7 +30,7 @@ fn get_function_output<'a>(
     // this makes the request object accessible across every route
     match function.number_of_params {
         0 => handler.call0(),
-        1 => handler.call1((ws.id.to_string(),)),
+        1 => handler.call1((ws.id.to_string(), )),
         // this is done to accommodate any future params
         2_u8..=u8::MAX => handler.call1((ws.id.to_string(), fn_msg.unwrap_or_default())),
     }
@@ -50,24 +50,44 @@ fn execute_ws_function(
                 task_locals,
                 get_function_output(function, text, py, ws).unwrap(),
             )
-            .unwrap()
+                .unwrap()
         });
         let f = async {
             let output = fut.await.unwrap();
             Python::with_gil(|py| output.extract::<&str>(py).unwrap().to_string())
         }
-        .into_actor(ws)
-        .map(|res, _, ctx| ctx.text(res));
+            .into_actor(ws)
+            .map(|res, _, ctx| ctx.text(res));
         ctx.spawn(f);
     } else {
         Python::with_gil(|py| {
-            let op: &str = get_function_output(function, text, py, ws)
+            let op = get_function_output(function, text, py, ws)
                 .unwrap()
-                .extract()
-                .unwrap();
-            ctx.text(op);
+                .extract::<&str>();
+            match op {
+                Ok(result) => ctx.text(result),
+                Err(e) => {
+                    error!(
+                    "Error while executing route function for endpoint : {}",
+                    get_traceback(&e));
+                }
+            }
         });
     }
+}
+
+fn get_traceback(error: &PyErr) -> String {
+    Python::with_gil(|py| -> String {
+        if let Some(traceback) = error.traceback(py) {
+            let msg = match traceback.format() {
+                Ok(msg) => format!("\n{msg} {error}"),
+                Err(e) => e.to_string(),
+            };
+            return msg;
+        };
+
+        error.value(py).to_string()
+    })
 }
 
 // By default mailbox capacity is 16 messages.
