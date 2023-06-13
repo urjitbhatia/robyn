@@ -30,7 +30,7 @@ fn get_function_output<'a>(
     // this makes the request object accessible across every route
     match function.number_of_params {
         0 => handler.call0(),
-        1 => handler.call1((ws.id.to_string(), )),
+        1 => handler.call1((ws.id.to_string(),)),
         // this is done to accommodate any future params
         2_u8..=u8::MAX => handler.call1((ws.id.to_string(), fn_msg.unwrap_or_default())),
     }
@@ -50,26 +50,27 @@ fn execute_ws_function(
                 task_locals,
                 get_function_output(function, text, py, ws).unwrap(),
             )
-                .unwrap()
+            .unwrap()
         });
         let f = async {
             let output = fut.await.unwrap();
             Python::with_gil(|py| output.extract::<&str>(py).unwrap().to_string())
         }
-            .into_actor(ws)
-            .map(|res, _, ctx| ctx.text(res));
+        .into_actor(ws)
+        .map(|res, _, ctx| ctx.text(res));
         ctx.spawn(f);
     } else {
         Python::with_gil(|py| {
             let op = get_function_output(function, text, py, ws)
                 .unwrap()
-                .extract::<&str>();
+                .extract::<Option<String>>();
             match op {
-                Ok(result) => ctx.text(result),
+                Ok(result) => ctx.text(result.unwrap_or(String::from("OK"))),
                 Err(e) => {
                     error!(
-                    "Error while executing route function for endpoint : {}",
-                    get_traceback(&e));
+                        "Error while executing websocket call: {}",
+                        get_traceback(&e)
+                    );
                 }
             }
         });
@@ -80,12 +81,14 @@ fn get_traceback(error: &PyErr) -> String {
     Python::with_gil(|py| -> String {
         if let Some(traceback) = error.traceback(py) {
             let msg = match traceback.format() {
-                Ok(msg) => format!("\n{msg} {error}"),
-                Err(e) => e.to_string(),
+                Ok(msg) => format!("With PyTraceback: \n{msg} {error}"),
+                Err(e) => {
+                    error!("Error traceback format: {}", e);
+                    e.to_string()
+                }
             };
             return msg;
         };
-
         error.value(py).to_string()
     })
 }
